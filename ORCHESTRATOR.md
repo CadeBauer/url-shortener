@@ -54,7 +54,7 @@ Repeatedly asks for ready stages and runs them. For each: entry gate → invoke 
 Runs inside Claude Code on every tool call. Exit code 2 blocks the call and returns the reason to the agent. Four controls:
 
 - **Write scope** — nothing outside the project or its worktrees.
-- **Per-stage write allowlist** — analysis stages may write only `artifacts/`; the test stage may not touch `src/`. This is what makes the reasoning artifacts real rather than retroactive.
+- **Per-stage write allowlist** — analysis stages may write only `artifacts/`; `write_tests` may write only `tests/` and `implement` only `src/`, so the stage that writes the tests cannot touch the code and the stage that fixes the code cannot touch the tests. This is what makes the reasoning artifacts real rather than retroactive.
 - **No publish** — agents commit locally but can never push. Covers `git push`, `gh pr`, `npm publish`, remote mutation, and compound statements that chain them.
 - **Safe-stop** — a sentinel file halts all agent activity at the next tool call.
 

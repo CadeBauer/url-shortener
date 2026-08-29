@@ -53,68 +53,84 @@ export const STAGES: Stage[] = [
     agent: "analyst",
     dependsOn: ["requirements", "impact_analysis"],
     inputs: ["artifacts/requirements/spec.md"],
-    outputs: ["artifacts/design/architecture.md"],
+    outputs: [
+      "artifacts/design/architecture.md",
+      "artifacts/design/contract.md",
+    ],
+    // impact_analysis is a dependency but not an input: on greenfield the
+    // stage is skipped and the entry gate would hard-fail on a missing file.
+    // The prompt reads it opportunistically instead.
     prompt:
-      "Read the spec and write artifacts/design/architecture.md covering " +
-      "components, the storage interface and the API surface, recording each " +
-      "significant choice with its rationale and consequences.",
+      "Read artifacts/requirements/spec.md and, if it exists, " +
+      "artifacts/impact/impact_analysis.md. Write artifacts/design/" +
+      "architecture.md covering components, the storage interface and the " +
+      "API surface, recording each significant choice with its rationale and " +
+      "consequences. Then write artifacts/design/contract.md as the exact " +
+      "interface both downstream branches build against without seeing each " +
+      "other: every source file path, every exported symbol with its full " +
+      "TypeScript signature, and a route table giving method, path, request " +
+      "shape, status codes and response shape including every error case.",
   },
 
-  // ---- parallel branch: neither depends on the other ---------------------
+  // ---- parallel branch: split by file space, not by layer ---------------
+  //   implement writes src/, write_tests writes tests/ — disjoint by
+  //   construction, so the same shape works for greenfield and brownfield.
   {
-    id: "implement_storage",
+    id: "implement",
     agent: "implementer",
     dependsOn: ["design"],
-    inputs: ["artifacts/design/architecture.md"],
-    outputs: ["src/storage.ts"],
-    worktree: true,
-    prompt:
-      "Following the architecture doc, implement the SQLite storage layer in " +
-      "src/storage.ts behind a small interface, with no HTTP concerns in it.",
-  },
-  {
-    id: "implement_api",
-    agent: "implementer",
-    dependsOn: ["design"],
-    inputs: ["artifacts/design/architecture.md"],
-    outputs: ["src/api.ts"],
+    inputs: [
+      "artifacts/design/architecture.md",
+      "artifacts/design/contract.md",
+    ],
+    outputs: ["src/storage.ts", "src/api.ts", "src/main.ts"],
     worktree: true,
     maxRetries: 2,
     prompt:
-      "Following the architecture doc, implement the Express routes in " +
-      "src/api.ts for link creation, redirect and health, rejecting any " +
-      "target URL that resolves to a private or loopback address.",
+      "Implement under src/ exactly as artifacts/design/contract.md " +
+      "specifies — same file paths, exported names, signatures, routes and " +
+      "status codes. Keep storage behind an interface with no HTTP concerns " +
+      "in it. Reject any target URL that resolves to a private or loopback " +
+      "address. Wire it together in src/main.ts and confirm the application " +
+      "compiles and starts cleanly. Do not touch anything under tests/.",
   },
-
-  // ---- join: waits for both ---------------------------------------------
   {
-    id: "integrate",
-    agent: "implementer",
-    dependsOn: ["implement_storage", "implement_api"],
-    inputs: ["src/storage.ts", "src/api.ts"],
-    outputs: ["src/main.ts"],
-    prompt:
-      "Wire the storage layer and API together in src/main.ts and confirm the " +
-      "application compiles and starts cleanly.",
-  },
-
-  {
-    id: "test",
+    id: "write_tests",
     agent: "test-engineer",
-    dependsOn: ["integrate"],
-    inputs: ["src/main.ts"],
+    dependsOn: ["design"],
+    inputs: ["artifacts/design/contract.md"],
     outputs: ["tests/shortener.test.ts"],
+    worktree: true,
     maxRetries: 2,
     prompt:
-      "Write tests in tests/shortener.test.ts covering create, redirect, " +
-      "expiry and at least one negative test proving a private-IP target is " +
-      "rejected, then run them; do not modify anything under src/.",
+      "Write the suite in tests/shortener.test.ts against artifacts/design/" +
+      "contract.md alone: cover create, redirect, expiry, and at least one " +
+      "negative test proving a private-IP target is rejected. The " +
+      "implementation is being written concurrently and is not in this " +
+      "worktree — write the tests, do not run them, do not create or modify " +
+      "anything under src/, and import only symbols the contract declares.",
+  },
+
+  // ---- join: waits for both, no worktree ------------------------------
+  {
+    id: "verify",
+    agent: "implementer",
+    dependsOn: ["implement", "write_tests"],
+    inputs: ["src/main.ts", "tests/shortener.test.ts"],
+    outputs: ["artifacts/test/results.md"],
+    maxRetries: 2,
+    prompt:
+      "Install dependencies and run the suite against the merged source. Fix " +
+      "src/ until it is green — you may not edit, skip or delete a test to " +
+      "get there. Write artifacts/test/results.md with the final test " +
+      "output, every fix you made, and any place the implementation and the " +
+      "contract disagreed.",
   },
   {
     id: "document",
     agent: "implementer",
-    dependsOn: ["integrate"], // parallel with `test`
-    inputs: ["src/main.ts"],
+    dependsOn: ["verify"],
+    inputs: ["src/main.ts", "artifacts/test/results.md"],
     outputs: ["README.md"],
     prompt:
       "Write README.md with setup and run instructions and a short " +

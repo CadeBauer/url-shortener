@@ -63,7 +63,10 @@ const STAGE_WRITE_SCOPE: Record<string, string[]> = {
   requirements:    ["artifacts/"],
   impact_analysis: ["artifacts/"],
   design:          ["artifacts/"],
-  test:            ["tests/", "artifacts/"],
+  implement:       ["src/"],
+  write_tests:     ["tests/"],
+  verify:          ["src/", "artifacts/"],
+  document:        ["README.md"],
 };
 
 // ---------------------------------------------------------------------------

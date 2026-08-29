@@ -64,10 +64,25 @@ function worktreeAdd(id: string): string {
   return wt;
 }
 
-function worktreeMerge(id: string) {
-  git(["merge", "--no-ff", `stage/${id}`, "-m", `merge stage/${id}`]);
+/**
+ * Merge a passing worktree stage back to HEAD.
+ *
+ * Two branches in a band merge one after the other, so the second can conflict
+ * with the first. On conflict, abort the half-done merge, roll the worktree
+ * back, and report failure so the caller records the stage as failed rather
+ * than letting it fall through to passed with the repo mid-conflict.
+ */
+function worktreeMerge(id: string): boolean {
+  const r = git(["merge", "--no-ff", `stage/${id}`, "-m", `merge stage/${id}`]);
+  if (r.status !== 0) {
+    git(["merge", "--abort"]);
+    emit("merge_conflict", id, { error: (r.stderr ?? "").slice(0, 200) });
+    worktreeRemove(id); // emits rollback_executed
+    return false;
+  }
   git(["worktree", "remove", "--force", path.join("worktrees", id)]);
   emit("worktree_merged", id);
+  return true;
 }
 
 /** Rollback. Discards everything the stage did; repo is untouched. */
@@ -192,28 +207,41 @@ async function runStage(stage: Stage, state: State): Promise<Result> {
 }
 
 function finish(stage: Stage, r: Result, state: State) {
-  if (r.ok) {
-    if (stage.worktree) {
-      commit(r.id, path.join("worktrees", r.id)); // commit inside the worktree
-      worktreeMerge(r.id);
-    } else {
-      commit(r.id);
+  let ok = r.ok;
+  let why = r.why;
+  let mergeFailed = false;
+
+  if (ok && stage.worktree) {
+    commit(r.id, path.join("worktrees", r.id)); // commit inside the worktree
+    if (!worktreeMerge(r.id)) {
+      // worktreeMerge aborted the merge and already rolled the worktree back.
+      ok = false;
+      mergeFailed = true;
+      why = "merge conflict with a concurrently merged stage";
     }
+  } else if (ok) {
+    commit(r.id);
+  }
+
+  if (ok) {
     state.set(r.id, { status: "passed", endedAt: Date.now() / 1000, lastFailure: null });
     emit("stage_passed", r.id);
     log(`✓ ${r.id}`);
-  } else {
-    if (stage.worktree) worktreeRemove(r.id); // rollback on failure
-    state.set(r.id, {
-      status: "failed",
-      endedAt: Date.now() / 1000,
-      lastFailure: r.why,
-    });
-    emit("stage_failed", r.id, { reason: r.why });
-    log(`✗ ${r.id}: ${r.why}`);
-    if (state.stages[r.id].attempts <= (stage.maxRetries ?? 1)) {
-      emit("retry_triggered", r.id);
-    }
+    return;
+  }
+
+  // Failure path. A merge conflict has already removed the worktree inside
+  // worktreeMerge, so only roll back here when the stage body itself failed.
+  if (stage.worktree && !mergeFailed) worktreeRemove(r.id);
+  state.set(r.id, {
+    status: "failed",
+    endedAt: Date.now() / 1000,
+    lastFailure: why,
+  });
+  emit("stage_failed", r.id, { reason: why });
+  log(`✗ ${r.id}: ${why}`);
+  if (state.stages[r.id].attempts <= (stage.maxRetries ?? 1)) {
+    emit("retry_triggered", r.id);
   }
 }
 

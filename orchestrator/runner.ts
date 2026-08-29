@@ -4,15 +4,16 @@
  *
  *   tsx runner.ts           run until nothing is left to do
  *   tsx runner.ts --plan    print the graph and exit, running nothing
- *   tsx runner.ts --reset   discard state and start over
+ *
+ * Every run starts cold — there is no persisted state and nothing to resume.
+ * Stage status lives in an in-memory Map owned by main().
  *
  * Sequencing is never written down. It falls out of `dependsOn` in stages.ts.
  * When readyStages() returns two stages, they run concurrently in separate git
  * worktrees; when it returns one, that is a sequential path. Same code path.
  *
- * The runner is the only writer of state.json, and it emits the stage-boundary
- * events metrics.ts needs — so the log stays complete without you having to
- * remember to call ./orch at each step.
+ * The runner emits the stage-boundary events metrics.ts needs — so the log
+ * stays complete without you having to remember to call ./orch at each step.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -20,7 +21,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { STAGES, type Stage } from "./stages.js";
-import { State, validateDag, readyStages } from "./state.js";
+import { validateDag, readyStages, type Status } from "./graph.js";
 
 const ORCH = ".orchestrator";
 const AUDIT_LOG = path.join(ORCH, "audit.jsonl");
@@ -137,15 +138,12 @@ function exitGate(stage: Stage, cwd: string): [boolean, string] {
 // ---------------------------------------------------------------------------
 
 /** A fresh subagent gets nothing but this string, so paths go in it. */
-function buildPrompt(stage: Stage, retryReason: string | null): string {
+function buildPrompt(stage: Stage): string {
   return [
     `Use the ${stage.agent} subagent for this task.`,
     stage.prompt,
     stage.inputs.length ? `Read these inputs: ${stage.inputs.join(", ")}.` : "",
     `You must produce: ${stage.outputs.join(", ")}.`,
-    retryReason
-      ? `A previous attempt failed its exit gate: ${retryReason}. Fix that specifically.`
-      : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -181,15 +179,13 @@ interface Result {
   why: string | null;
 }
 
-async function runStage(stage: Stage, state: State): Promise<Result> {
+async function runStage(stage: Stage, status: Map<string, Status>): Promise<Result> {
   const id = stage.id;
-  const attempt = state.stages[id].attempts + 1;
-  const reason = state.stages[id].lastFailure;
   const cwd = stage.worktree ? path.join("worktrees", id) : ".";
 
-  state.set(id, { status: "running", attempts: attempt, startedAt: Date.now() / 1000 });
-  emit("stage_started", id, { attempt, cwd });
-  log(`▶ ${id} (attempt ${attempt})${stage.worktree ? " [worktree]" : ""}`);
+  status.set(id, "running");
+  emit("stage_started", id, { cwd });
+  log(`▶ ${id}${stage.worktree ? " [worktree]" : ""}`);
 
   const [entryOk, entryWhy] = entryGate(stage, cwd);
   if (!entryOk) return { id, ok: false, why: entryWhy };
@@ -197,7 +193,7 @@ async function runStage(stage: Stage, state: State): Promise<Result> {
   // Hooks read this to tag their events with the right stage.
   fs.writeFileSync(path.join(ORCH, "current_stage"), id);
 
-  const { code, stderr } = await runAgent(buildPrompt(stage, reason), cwd);
+  const { code, stderr } = await runAgent(buildPrompt(stage), cwd);
   if (code !== 0) {
     return { id, ok: false, why: `agent exited ${code}: ${stderr.slice(0, 300)}` };
   }
@@ -206,7 +202,7 @@ async function runStage(stage: Stage, state: State): Promise<Result> {
   return { id, ok: exitOk, why: exitOk ? null : exitWhy };
 }
 
-function finish(stage: Stage, r: Result, state: State) {
+function finish(stage: Stage, r: Result, status: Map<string, Status>) {
   let ok = r.ok;
   let why = r.why;
   let mergeFailed = false;
@@ -224,36 +220,24 @@ function finish(stage: Stage, r: Result, state: State) {
   }
 
   if (ok) {
-    state.set(r.id, { status: "passed", endedAt: Date.now() / 1000, lastFailure: null });
+    status.set(r.id, "passed");
     emit("stage_passed", r.id);
     log(`✓ ${r.id}`);
     return;
   }
 
-  // Failure path. A merge conflict has already removed the worktree inside
-  // worktreeMerge, so only roll back here when the stage body itself failed.
+  // Failure path — terminal. A merge conflict has already removed the worktree
+  // inside worktreeMerge, so only roll back here when the stage body failed.
   if (stage.worktree && !mergeFailed) worktreeRemove(r.id);
-  state.set(r.id, {
-    status: "failed",
-    endedAt: Date.now() / 1000,
-    lastFailure: why,
-  });
+  status.set(r.id, "failed");
   emit("stage_failed", r.id, { reason: why });
   log(`✗ ${r.id}: ${why}`);
-  if (state.stages[r.id].attempts <= (stage.maxRetries ?? 1)) {
-    emit("retry_triggered", r.id);
-  }
 }
 
 // ---------------------------------------------------------------------------
 
 async function main() {
   const order = validateDag(STAGES); // rejects cycles before anything runs
-
-  if (process.argv.includes("--reset")) {
-    fs.rmSync(".orchestrator/state.json", { force: true });
-    console.log("state cleared");
-  }
 
   if (process.argv.includes("--plan")) {
     console.log(`\ntopological order: ${order.join(" -> ")}\n`);
@@ -266,8 +250,9 @@ async function main() {
   }
 
   const byId = new Map(STAGES.map((s) => [s.id, s]));
-  const state = State.loadOrNew(STAGES);
-  emit("run_started", "orchestrator", { runId: state.runId });
+  const status = new Map<string, Status>(STAGES.map((s) => [s.id, "pending"]));
+  const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  emit("run_started", "orchestrator", { runId });
 
   for (;;) {
     if (fs.existsSync(STOP_FILE)) {
@@ -276,7 +261,7 @@ async function main() {
       break;
     }
 
-    let ready = readyStages(STAGES, state);
+    let ready = readyStages(STAGES, status);
 
     // Greenfield: nothing to analyse yet, so skip rather than fail.
     let skippedAny = false;
@@ -285,7 +270,7 @@ async function main() {
       const empty =
         probe && (!fs.existsSync(probe) || fs.readdirSync(probe).length === 0);
       if (empty) {
-        state.set(s.id, { status: "skipped" });
+        status.set(s.id, "skipped");
         emit("stage_skipped", s.id, { reason: `${probe}/ is empty` });
         log(`⊘ ${s.id} (skipped)`);
         ready = ready.filter((x) => x.id !== s.id);
@@ -304,13 +289,13 @@ async function main() {
     // contend on .git/index.lock and one will silently fail.
     for (const s of ready) if (s.worktree) worktreeAdd(s.id);
 
-    const results = await Promise.all(ready.map((s) => runStage(s, state)));
-    for (const r of results) finish(byId.get(r.id)!, r, state);
+    const results = await Promise.all(ready.map((s) => runStage(s, status)));
+    for (const r of results) finish(byId.get(r.id)!, r, status);
   }
 
   emit("run_ended", "orchestrator");
   console.log("\nfinal state:");
-  for (const id of order) console.log(`  ${id.padEnd(20)} ${state.status(id)}`);
+  for (const id of order) console.log(`  ${id.padEnd(20)} ${status.get(id)}`);
   console.log("\nrun `tsx metrics.ts` for reliability metrics\n");
 }
 

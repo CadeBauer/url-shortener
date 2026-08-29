@@ -19,7 +19,6 @@ export interface Stage {
   prompt: string;
   /** Run in an isolated git worktree so parallel stages cannot collide. */
   worktree?: boolean;
-  maxRetries?: number;
   /** Skip when this directory is empty — greenfield has nothing to analyse. */
   skipIfEmpty?: string;
 }
@@ -85,7 +84,6 @@ export const STAGES: Stage[] = [
     ],
     outputs: ["src/storage.ts", "src/api.ts", "src/main.ts"],
     worktree: true,
-    maxRetries: 2,
     prompt:
       "Implement under src/ exactly as artifacts/design/contract.md " +
       "specifies — same file paths, exported names, signatures, routes and " +
@@ -101,7 +99,6 @@ export const STAGES: Stage[] = [
     inputs: ["artifacts/design/contract.md"],
     outputs: ["tests/shortener.test.ts"],
     worktree: true,
-    maxRetries: 2,
     prompt:
       "Write the suite in tests/shortener.test.ts against artifacts/design/" +
       "contract.md alone: cover create, redirect, expiry, and at least one " +
@@ -118,7 +115,6 @@ export const STAGES: Stage[] = [
     dependsOn: ["implement", "write_tests"],
     inputs: ["src/main.ts", "tests/shortener.test.ts"],
     outputs: ["artifacts/test/results.md"],
-    maxRetries: 2,
     prompt:
       "Install dependencies and run the suite against the merged source. Fix " +
       "src/ until it is green — you may not edit, skip or delete a test to " +

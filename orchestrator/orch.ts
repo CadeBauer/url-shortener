@@ -8,7 +8,6 @@
  *
  *   tsx orch.ts stage <id>             mark the current stage
  *   tsx orch.ts start|pass|fail <id>   stage boundary events
- *   tsx orch.ts retry <id>             retry_triggered
  *   tsx orch.ts approve                grant approval for the current stage
  *   tsx orch.ts stop | resume          engage / clear safe-stop
  *   tsx orch.ts wt-add <name>          create a worktree
@@ -85,12 +84,6 @@ switch (cmd) {
     console.log(`✗ ${arg}`);
     break;
 
-  case "retry":
-    setStage(need(arg, "<id>"));
-    emit("retry_triggered");
-    console.log(`↻ ${arg}`);
-    break;
-
   case "approve": {
     const token = path.join(APPROVALS, `${stage()}.granted`);
     fs.writeFileSync(token, "");
@@ -139,6 +132,6 @@ switch (cmd) {
   }
 
   default:
-    console.log(fs.readFileSync(new URL(import.meta.url), "utf-8").split("\n").slice(2, 18).join("\n"));
+    console.log(fs.readFileSync(new URL(import.meta.url), "utf-8").split("\n").slice(2, 17).join("\n"));
     process.exit(1);
 }

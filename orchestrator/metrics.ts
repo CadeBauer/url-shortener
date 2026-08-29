@@ -55,8 +55,6 @@ function main() {
   const of = (t: string) => events.filter((e) => e.event === t);
   const started = of("stage_started");
   const passed = of("stage_passed");
-  const failed = of("stage_failed");
-  const retries = of("retry_triggered");
   const rollbacks = of("rollback_executed");
   const denials = of("policy_denied");
   const approvals = of("approval_granted");
@@ -73,21 +71,15 @@ function main() {
 
   // -- success rate ---------------------------------------------------------
   const attempted = stagesOf(started).size;
-  const troubled = new Set([...stagesOf(retries), ...stagesOf(failed)]);
-  const firstTry = [...stagesOf(passed)].filter((s) => !troubled.has(s)).length;
+  const succeeded = stagesOf(passed).size;
   console.log(
     attempted
-      ? `\nSuccess rate            ${firstTry}/${attempted} ` +
-          `(${Math.round((100 * firstTry) / attempted)}%) passed on first attempt`
+      ? `\nSuccess rate            ${succeeded}/${attempted} ` +
+          `(${Math.round((100 * succeeded) / attempted)}%)`
       : "\nSuccess rate            n/a (no stage_started events)",
   );
 
-  // -- retry / rollback frequency -------------------------------------------
-  console.log(
-    retries.length
-      ? `Retry frequency         ${retries.length} across ${stagesOf(retries).size} stage(s)`
-      : "Retry frequency         n/a (no qualifying events)",
-  );
+  // -- rollback frequency --------------------------------------------------
   console.log(
     rollbacks.length
       ? `Rollback frequency      ${rollbacks.length}`

@@ -17,8 +17,6 @@ export interface Stage {
   inputs: string[];
   outputs: string[];
   prompt: string;
-  /** Run in an isolated git worktree so parallel stages cannot collide. */
-  worktree?: boolean;
   /** Skip when this directory is empty — greenfield has nothing to analyse. */
   skipIfEmpty?: string;
 }
@@ -83,7 +81,6 @@ export const STAGES: Stage[] = [
       "artifacts/design/contract.md",
     ],
     outputs: ["src/storage.ts", "src/api.ts", "src/main.ts"],
-    worktree: true,
     prompt:
       "Implement under src/ exactly as artifacts/design/contract.md " +
       "specifies — same file paths, exported names, signatures, routes and " +
@@ -98,17 +95,16 @@ export const STAGES: Stage[] = [
     dependsOn: ["design"],
     inputs: ["artifacts/design/contract.md"],
     outputs: ["tests/shortener.test.ts"],
-    worktree: true,
     prompt:
       "Write the suite in tests/shortener.test.ts against artifacts/design/" +
       "contract.md alone: cover create, redirect, expiry, and at least one " +
       "negative test proving a private-IP target is rejected. The " +
-      "implementation is being written concurrently and is not in this " +
-      "worktree — write the tests, do not run them, do not create or modify " +
+      "implementation is being written concurrently and may not be on disk " +
+      "yet — write the tests, do not run them, do not create or modify " +
       "anything under src/, and import only symbols the contract declares.",
   },
 
-  // ---- join: waits for both, no worktree ------------------------------
+  // ---- join: waits for both -----------------------------------------
   {
     id: "verify",
     agent: "implementer",

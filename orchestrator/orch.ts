@@ -1,28 +1,22 @@
 #!/usr/bin/env tsx
 /**
- * orch.ts — thin CLI over the audit log and git worktrees.
+ * orch.ts — thin CLI over the audit log.
  *
  * Hooks capture what agents do; the runner captures stage boundaries. This
- * captures what YOU do out of band: safe-stop, manual rollback.
+ * captures what YOU do out of band: safe-stop.
  * Between the three, every event needed for metrics lands in one file.
  *
  *   tsx orch.ts stage <id>             mark the current stage
  *   tsx orch.ts start|pass|fail <id>   stage boundary events
  *   tsx orch.ts stop | resume          engage / clear safe-stop
- *   tsx orch.ts wt-add <name>          create a worktree
- *   tsx orch.ts rollback <name>        discard a worktree  (rollback_executed)
- *   tsx orch.ts merge <name>           merge a worktree branch back
  */
 
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 const ORCH = ".orchestrator";
 const LOG = path.join(ORCH, "audit.jsonl");
 const STOP_FILE = path.join(ORCH, "STOP");
-
-fs.mkdirSync("worktrees", { recursive: true });
 
 const stage = () => {
   const f = path.join(ORCH, "current_stage");
@@ -43,9 +37,6 @@ function emit(event: string, detail: Record<string, unknown> = {}) {
     }) + "\n",
   );
 }
-
-const git = (...args: string[]) =>
-  spawnSync("git", args, { stdio: "inherit", encoding: "utf-8" });
 
 const [cmd, arg, arg2] = process.argv.slice(2);
 const need = (v: string | undefined, what: string) => {
@@ -92,34 +83,7 @@ switch (cmd) {
     console.log("resumed");
     break;
 
-  // --- worktrees: parallelism and rollback ---------------------------------
-  case "wt-add": {
-    const id = need(arg, "<name>");
-    git("worktree", "add", path.join("worktrees", id), "-b", `stage/${id}`);
-    emit("worktree_created", { worktree: id });
-    console.log(`worktree ready: worktrees/${id} (branch stage/${id})`);
-    break;
-  }
-
-  case "rollback": {
-    const id = need(arg, "<name>");
-    git("worktree", "remove", "--force", path.join("worktrees", id));
-    git("branch", "-D", `stage/${id}`);
-    emit("rollback_executed", { worktree: id });
-    console.log(`rolled back: ${id} — repo unchanged`);
-    break;
-  }
-
-  case "merge": {
-    const id = need(arg, "<name>");
-    git("merge", "--no-ff", `stage/${id}`, "-m", `merge stage/${id}`);
-    git("worktree", "remove", "--force", path.join("worktrees", id));
-    emit("worktree_merged", { worktree: id });
-    console.log(`merged: ${id}`);
-    break;
-  }
-
   default:
-    console.log(fs.readFileSync(new URL(import.meta.url), "utf-8").split("\n").slice(2, 15).join("\n"));
+    console.log(fs.readFileSync(new URL(import.meta.url), "utf-8").split("\n").slice(2, 11).join("\n"));
     process.exit(1);
 }

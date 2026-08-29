@@ -29,7 +29,7 @@ orchestrator/
   graph.ts              graph validation + stage readiness
   runner.ts             the execution loop
   metrics.ts            metrics derived from the audit log
-  orch.ts               CLI for safe-stop, rollback
+  orch.ts               CLI for safe-stop
 inbox/request.md        the incoming requirement
 artifacts/              stage outputs — the context channel between stages
 src/  tests/            the workload being built
@@ -48,7 +48,7 @@ The dependency graph, declared as data. Each stage names its `dependsOn`, its in
 The file holds no state. The runner owns stage status in an in-memory map and passes it in, so every run starts cold — there is no `state.json` and nothing to resume. Only the runner writes status, so an agent cannot mark itself passed.
 
 ### `runner.ts` — the execution loop
-Repeatedly asks for ready stages and runs them. For each: entry gate → invoke the subagent → exit gate → commit or roll back. A stage gets exactly one attempt; if it fails it stays failed, and the run ends once nothing else is ready. Parallel stages run in isolated git worktrees. Every passing stage commits its outputs, which is both the lineage record and how a parallel stage sees its inputs (worktrees branch from HEAD).
+Repeatedly asks for ready stages and runs them. For each: entry gate → invoke the subagent → exit gate. A stage gets exactly one attempt; if it fails it stays failed, and the run ends once nothing else is ready. Parallel stages run directly against the shared working tree — `implement` and `write_tests` are guaranteed by the design contract to never touch the same file, so no isolation is needed. The runner does not commit on your behalf; git history is entirely the operator's call.
 
 ### `hook.ts` — governance
 Runs inside Claude Code on every `PreToolUse`. Exit code 2 blocks the call and returns the reason to the agent. Two controls:
@@ -59,7 +59,7 @@ Runs inside Claude Code on every `PreToolUse`. Exit code 2 blocks the call and r
 Denials are logged, not silent: the record of what the system refused to do is the evidence of controlled autonomy.
 
 ### `orch.ts` — operator CLI
-Safe-stop and manual worktree rollback.
+Safe-stop.
 
 ### `metrics.ts` — reliability metrics
 Success rate (stages passed / stages attempted), rollback frequency, MTTR, and end-to-end latency, all derived from `audit.jsonl`. Nothing is tracked in a parallel counter, so the metrics can't drift from the record. Metrics with no qualifying events report `n/a` rather than zero.
@@ -85,7 +85,7 @@ C. Ambiguous   — "make it reliable at scale"; clarification memo, no code writ
 
 ## Scope
 
-**Built:** dependency graph with gates, sequential and parallel execution with synchronization, cross-stage context and lineage, worktree rollback, safe-stop, policy guardrails, audit log, derived metrics.
+**Built:** dependency graph with gates, sequential and parallel execution with synchronization, cross-stage context and lineage, safe-stop, policy guardrails, audit log, derived metrics.
 
 **Designed but not implemented:** dynamic re-planning on upstream change. Input hashes give the detection primitive; staleness propagation and subgraph re-execution were scoped out under time constraints. See `agentic-orchestration-requirements.md`.
 

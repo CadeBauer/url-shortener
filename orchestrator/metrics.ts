@@ -55,7 +55,6 @@ function main() {
   const of = (t: string) => events.filter((e) => e.event === t);
   const started = of("stage_started");
   const passed = of("stage_passed");
-  const rollbacks = of("rollback_executed");
   const denials = of("policy_denied");
   const stagesOf = (es: Event[]) => new Set(es.map((e) => e.stage));
 
@@ -76,13 +75,6 @@ function main() {
       ? `\nSuccess rate            ${succeeded}/${attempted} ` +
           `(${Math.round((100 * succeeded) / attempted)}%)`
       : "\nSuccess rate            n/a (no stage_started events)",
-  );
-
-  // -- rollback frequency --------------------------------------------------
-  console.log(
-    rollbacks.length
-      ? `Rollback frequency      ${rollbacks.length}`
-      : "Rollback frequency      n/a (no qualifying events)",
   );
 
   // -- MTTR ------------------------------------------------------------------

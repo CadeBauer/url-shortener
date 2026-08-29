@@ -9,14 +9,16 @@
  * Stage status lives in an in-memory Map owned by main().
  *
  * Sequencing is never written down. It falls out of `dependsOn` in stages.ts.
- * When readyStages() returns two stages, they run concurrently in separate git
- * worktrees; when it returns one, that is a sequential path. Same code path.
+ * When readyStages() returns two stages, they run concurrently against the
+ * same working tree — safe because their declared outputs never overlap
+ * (implement writes src/, write_tests writes tests/); when it returns one,
+ * that is a sequential path. Same code path.
  *
  * The runner emits the stage-boundary events metrics.ts needs — so the log
  * stays complete without you having to remember to call ./orch at each step.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -44,66 +46,6 @@ function emit(event: string, stage: string, detail: Record<string, unknown> = {}
 }
 
 const log = (msg: string) => console.log(`  ${msg}`);
-
-// ---------------------------------------------------------------------------
-// Worktrees — isolation for parallel stages, and free rollback
-// ---------------------------------------------------------------------------
-
-function git(args: string[], cwd = ".") {
-  return spawnSync("git", args, { cwd, encoding: "utf-8" });
-}
-
-function worktreeAdd(id: string): string {
-  const wt = path.join("worktrees", id);
-  // Idempotent across re-runs: clear any leftover worktree and branch first,
-  // or `git worktree add -b` fails and the checkout is never created.
-  git(["worktree", "remove", "--force", wt]);
-  git(["branch", "-D", `stage/${id}`]);
-  const r = git(["worktree", "add", wt, "-b", `stage/${id}`]);
-  if (r.status !== 0) emit("worktree_failed", id, { error: r.stderr?.slice(0, 200) });
-  else emit("worktree_created", id, { worktree: wt });
-  return wt;
-}
-
-/**
- * Merge a passing worktree stage back to HEAD.
- *
- * Two branches in a band merge one after the other, so the second can conflict
- * with the first. On conflict, abort the half-done merge, roll the worktree
- * back, and report failure so the caller records the stage as failed rather
- * than letting it fall through to passed with the repo mid-conflict.
- */
-function worktreeMerge(id: string): boolean {
-  const r = git(["merge", "--no-ff", `stage/${id}`, "-m", `merge stage/${id}`]);
-  if (r.status !== 0) {
-    git(["merge", "--abort"]);
-    emit("merge_conflict", id, { error: (r.stderr ?? "").slice(0, 200) });
-    worktreeRemove(id); // emits rollback_executed
-    return false;
-  }
-  git(["worktree", "remove", "--force", path.join("worktrees", id)]);
-  emit("worktree_merged", id);
-  return true;
-}
-
-/** Rollback. Discards everything the stage did; repo is untouched. */
-function worktreeRemove(id: string) {
-  git(["worktree", "remove", "--force", path.join("worktrees", id)]);
-  git(["branch", "-D", `stage/${id}`]);
-  emit("rollback_executed", id);
-}
-
-/**
- * Commit a passing stage's work.
- *
- * Necessary as well as tidy: worktrees branch from HEAD, so an artifact that
- * is only sitting uncommitted in the main directory is invisible to a parallel
- * stage. Committing per stage is also the lineage record.
- */
-function commit(id: string, cwd = ".") {
-  git(["add", "-A"], cwd);
-  git(["commit", "-m", `stage(${id}): automated output`], cwd);
-}
 
 // ---------------------------------------------------------------------------
 // Gates
@@ -181,11 +123,11 @@ interface Result {
 
 async function runStage(stage: Stage, status: Map<string, Status>): Promise<Result> {
   const id = stage.id;
-  const cwd = stage.worktree ? path.join("worktrees", id) : ".";
+  const cwd = ".";
 
   status.set(id, "running");
   emit("stage_started", id, { cwd });
-  log(`▶ ${id}${stage.worktree ? " [worktree]" : ""}`);
+  log(`▶ ${id}`);
 
   const [entryOk, entryWhy] = entryGate(stage, cwd);
   if (!entryOk) return { id, ok: false, why: entryWhy };
@@ -202,36 +144,21 @@ async function runStage(stage: Stage, status: Map<string, Status>): Promise<Resu
   return { id, ok: exitOk, why: exitOk ? null : exitWhy };
 }
 
-function finish(stage: Stage, r: Result, status: Map<string, Status>) {
-  let ok = r.ok;
-  let why = r.why;
-  let mergeFailed = false;
-
-  if (ok && stage.worktree) {
-    commit(r.id, path.join("worktrees", r.id)); // commit inside the worktree
-    if (!worktreeMerge(r.id)) {
-      // worktreeMerge aborted the merge and already rolled the worktree back.
-      ok = false;
-      mergeFailed = true;
-      why = "merge conflict with a concurrently merged stage";
-    }
-  } else if (ok) {
-    commit(r.id);
-  }
-
-  if (ok) {
+/**
+ * Plain pass/fail bookkeeping. The runner never commits and never rolls back:
+ * whatever the agent wrote stays in the working tree exactly as it left it, and
+ * committing — at whatever granularity — is the operator's call.
+ */
+function finish(r: Result, status: Map<string, Status>) {
+  if (r.ok) {
     status.set(r.id, "passed");
     emit("stage_passed", r.id);
     log(`✓ ${r.id}`);
-    return;
+  } else {
+    status.set(r.id, "failed");
+    emit("stage_failed", r.id, { reason: r.why });
+    log(`✗ ${r.id}: ${r.why}`);
   }
-
-  // Failure path — terminal. A merge conflict has already removed the worktree
-  // inside worktreeMerge, so only roll back here when the stage body failed.
-  if (stage.worktree && !mergeFailed) worktreeRemove(r.id);
-  status.set(r.id, "failed");
-  emit("stage_failed", r.id, { reason: why });
-  log(`✗ ${r.id}: ${why}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +176,6 @@ async function main() {
     return;
   }
 
-  const byId = new Map(STAGES.map((s) => [s.id, s]));
   const status = new Map<string, Status>(STAGES.map((s) => [s.id, "pending"]));
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   emit("run_started", "orchestrator", { runId });
@@ -285,12 +211,8 @@ async function main() {
       log(`→ ${ready.length} stages in parallel: ${ready.map((s) => s.id).join(", ")}`);
     }
 
-    // Worktrees are created serially: concurrent `git worktree add` calls
-    // contend on .git/index.lock and one will silently fail.
-    for (const s of ready) if (s.worktree) worktreeAdd(s.id);
-
     const results = await Promise.all(ready.map((s) => runStage(s, status)));
-    for (const r of results) finish(byId.get(r.id)!, r, status);
+    for (const r of results) finish(r, status);
   }
 
   emit("run_ended", "orchestrator");

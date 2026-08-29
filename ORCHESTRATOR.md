@@ -8,9 +8,10 @@ An orchestration layer that drives a full software lifecycle — requirements, d
 
 ```bash
 npm install
-npm run plan          # print the dependency graph, run nothing
-npm run run           # execute the pipeline
-npm run metrics       # reliability metrics from the audit log
+npm run plan               # print the dependency graph, run nothing
+npm run run                # execute the pipeline
+npm run run -- --resume    # re-run only the stages that did not pass last time
+npm run metrics            # reliability metrics from the audit log
 ```
 
 Requires Node 22+ and the `claude` CLI on `PATH`. Set `CLAUDE_BIN` to override.
@@ -44,10 +45,10 @@ The dependency graph, declared as data. Each stage names its `dependsOn`, its in
 ### `graph.ts` — graph validation and stage readiness
 `validateDag` rejects cycles and dangling edges before anything runs. `readyStages` returns every stage whose dependencies have passed. One result is a sequential path; two are parallel — same mechanism, no special casing.
 
-The file holds no state. The runner owns stage status in an in-memory map and passes it in, so every run starts cold — there is no `state.json` and nothing to resume. Only the runner writes status, so an agent cannot mark itself passed.
+The file holds no state. The runner owns stage status in an in-memory map and passes it in. By default every run starts cold; `npm run run -- --resume` seeds that map from the last run's `stage_passed` / `stage_skipped` events in the audit log, so an interrupted run picks up where it stopped — no separate `state.json` to drift from the record. Only the runner writes status, so an agent cannot mark itself passed.
 
 ### `runner.ts` — the execution loop
-Repeatedly asks for ready stages and runs them. For each: entry gate → invoke the subagent → exit gate. A stage gets exactly one attempt; if it fails it stays failed, and the run ends once nothing else is ready. Parallel stages run directly against the shared working tree — `implement` and `write_tests` are guaranteed by the design contract to never touch the same file, so no isolation is needed. The runner does not commit on your behalf; git history is entirely the operator's call.
+Repeatedly asks for ready stages and runs them. For each: entry gate → invoke the subagent → exit gate. A stage gets one attempt per run; if it fails it stays failed, and the run ends once nothing else is ready. `npm run run -- --resume` then replays the audit log, carries over whatever already passed, and gives the failed or interrupted stages a fresh attempt. Parallel stages run directly against the shared working tree — `implement` and `write_tests` are guaranteed by the design contract to never touch the same file, so no isolation is needed. The runner does not commit on your behalf; git history is entirely the operator's call.
 
 ### `hook.ts` — governance
 Runs inside Claude Code on every `PreToolUse`. Exit code 2 blocks the call and returns the reason to the agent. Two controls:
@@ -85,4 +86,4 @@ C. Ambiguous   — "make it reliable at scale"; clarification memo, no code writ
 
 **Designed but not implemented:** dynamic re-planning on upstream change. Input hashes give the detection primitive; staleness propagation and subgraph re-execution were scoped out under time constraints. See `agentic-orchestration-requirements.md`.
 
-**Known limitations:** local execution only (no distributed scheduler); illustrative rather than regulation-mapped compliance rules; metrics computed over a handful of runs. Runs are not resumable and each stage gets a single attempt — retry and run-state persistence were cut under the time constraint. No graceful in-flight halt — a run in progress can only be stopped by killing the process; a stage-boundary safe-stop was out of scope for this prototype.
+**Known limitations:** local execution only (no distributed scheduler); illustrative rather than regulation-mapped compliance rules; metrics computed over a handful of runs. `--resume` recovers an interrupted run by replaying the audit log, but there is still no automatic in-run retry — a stage that fails stays failed until the next invocation. No graceful in-flight halt — a run in progress can only be stopped by killing the process; a stage-boundary safe-stop was out of scope for this prototype.

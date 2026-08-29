@@ -4,9 +4,14 @@
  *
  *   tsx runner.ts           run until nothing is left to do
  *   tsx runner.ts --plan    print the graph and exit, running nothing
+ *   tsx runner.ts --resume  seed status from the audit log and re-run only
+ *                           the stages that did not pass last time
  *
- * Every run starts cold — there is no persisted state and nothing to resume.
- * Stage status lives in an in-memory Map owned by main().
+ * Without --resume every run starts cold. Stage status lives in an in-memory
+ * Map owned by main(). With --resume that Map is seeded from the last run's
+ * stage_passed / stage_skipped events in .orchestrator/audit.jsonl — the only
+ * record of what actually finished — so a stage that was killed mid-run comes
+ * back as pending and runs again. No separate state file to fall out of sync.
  *
  * Sequencing is never written down. It falls out of `dependsOn` in stages.ts.
  * When readyStages() returns two stages, they run concurrently against the
@@ -29,6 +34,7 @@ const ORCH = ".orchestrator";
 const AUDIT_LOG = path.join(ORCH, "audit.jsonl");
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const TIMEOUT = Number(process.env.STAGE_TIMEOUT ?? 900) * 1000;
+const RESUME = process.argv.includes("--resume");
 
 function emit(event: string, stage: string, detail: Record<string, unknown> = {}) {
   fs.mkdirSync(ORCH, { recursive: true });
@@ -166,6 +172,66 @@ function finish(r: Result, status: Map<string, Status>) {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Cold start: every stage pending. With --resume, replay the most recent run
+ * from the audit log and carry over only what reached stage_passed or
+ * stage_skipped; anything else (failed, or killed before it could report)
+ * stays pending and runs again. No separate state file to drift from the log.
+ */
+function initialStatus(): Map<string, Status> {
+  const status = new Map<string, Status>(STAGES.map((s) => [s.id, "pending"]));
+  if (!RESUME) return status;
+
+  if (!fs.existsSync(AUDIT_LOG)) {
+    log("--resume: no audit log yet, starting cold");
+    return status;
+  }
+
+  const events = fs
+    .readFileSync(AUDIT_LOG, "utf-8")
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => {
+      try {
+        return JSON.parse(l) as { stage?: string; event?: string };
+      } catch {
+        return null;
+      }
+    })
+    .filter((e): e is { stage?: string; event?: string } => e !== null);
+
+  let start = -1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].event === "run_started") {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) {
+    log("--resume: no prior run in the audit log, starting cold");
+    return status;
+  }
+
+  const carried: string[] = [];
+  for (const e of events.slice(start)) {
+    const st = e.stage ?? "";
+    if (!status.has(st)) continue;
+    if (e.event === "stage_passed") {
+      status.set(st, "passed");
+      carried.push(st);
+    } else if (e.event === "stage_skipped") {
+      status.set(st, "skipped");
+      carried.push(st);
+    }
+  }
+  log(
+    carried.length
+      ? `--resume: carrying over ${carried.join(", ")}`
+      : "--resume: last run recorded nothing to carry over, starting cold",
+  );
+  return status;
+}
+
 async function main() {
   const order = validateDag(STAGES); // rejects cycles before anything runs
 
@@ -179,9 +245,9 @@ async function main() {
     return;
   }
 
-  const status = new Map<string, Status>(STAGES.map((s) => [s.id, "pending"]));
+  const status = initialStatus();
   const runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  emit("run_started", "orchestrator", { runId });
+  emit("run_started", "orchestrator", { runId, resumed: RESUME });
 
   for (;;) {
     let ready = readyStages(STAGES, status);

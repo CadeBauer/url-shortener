@@ -85,8 +85,9 @@ export const STAGES: Stage[] = [
       "specifies — same file paths, exported names, signatures, routes and " +
       "status codes. Keep storage behind an interface with no HTTP concerns " +
       "in it. Reject any target URL that resolves to a private or loopback " +
-      "address. Wire it together in src/main.ts and confirm the application " +
-      "compiles and starts cleanly. Do not touch anything under tests/.",
+      "address. Wire it together in src/main.ts. Confirm it typechecks with " +
+      "`npx tsc --noEmit` — do not start a server or run any command that " +
+      "does not return on its own. Do not touch anything under tests/.",
   },
   {
     id: "write_tests",

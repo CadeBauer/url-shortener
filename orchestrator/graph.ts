@@ -1,9 +1,10 @@
 /**
  * graph.ts — the stage graph: validation and readiness.
  *
- * Pure graph logic, no state. Every run starts cold: the runner owns an
- * in-memory Map<string, Status> and passes it in. Nothing is persisted, so
- * there is no state.json and no resumability.
+ * Pure graph logic, no state: the runner owns an in-memory Map<string, Status>
+ * and passes it in. This module never persists anything. A run is resumed
+ * (runner --resume) by seeding that Map from the audit log, not from state
+ * kept here.
  *
  * No content hashing and no staleness propagation — see NG-1 in the
  * orchestration requirements for why those were scoped out.

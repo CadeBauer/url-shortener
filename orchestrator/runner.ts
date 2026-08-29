@@ -1,0 +1,292 @@
+#!/usr/bin/env tsx
+/**
+ * runner.ts — executes the stage graph.
+ *
+ *   tsx runner.ts           run until nothing is left to do
+ *   tsx runner.ts --plan    print the graph and exit, running nothing
+ *   tsx runner.ts --reset   discard state and start over
+ *
+ * Sequencing is never written down. It falls out of `dependsOn` in stages.ts.
+ * When readyStages() returns two stages, they run concurrently in separate git
+ * worktrees; when it returns one, that is a sequential path. Same code path.
+ *
+ * The runner is the only writer of state.json, and it emits the stage-boundary
+ * events metrics.ts needs — so the log stays complete without you having to
+ * remember to call ./orch at each step.
+ */
+
+import { spawn, spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+import { STAGES, type Stage } from "./stages.js";
+import { State, validateDag, readyStages } from "./state.js";
+
+const ORCH = ".orchestrator";
+const AUDIT_LOG = path.join(ORCH, "audit.jsonl");
+const STOP_FILE = path.join(ORCH, "STOP");
+const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
+const TIMEOUT = Number(process.env.STAGE_TIMEOUT ?? 900) * 1000;
+
+function emit(event: string, stage: string, detail: Record<string, unknown> = {}) {
+  fs.mkdirSync(ORCH, { recursive: true });
+  fs.appendFileSync(
+    AUDIT_LOG,
+    JSON.stringify({
+      ts: Date.now() / 1000,
+      stage,
+      event,
+      actor: "system",
+      ...detail,
+    }) + "\n",
+  );
+}
+
+const log = (msg: string) => console.log(`  ${msg}`);
+
+// ---------------------------------------------------------------------------
+// Worktrees — isolation for parallel stages, and free rollback
+// ---------------------------------------------------------------------------
+
+function git(args: string[], cwd = ".") {
+  return spawnSync("git", args, { cwd, encoding: "utf-8" });
+}
+
+function worktreeAdd(id: string): string {
+  const wt = path.join("worktrees", id);
+  // Idempotent across re-runs: clear any leftover worktree and branch first,
+  // or `git worktree add -b` fails and the checkout is never created.
+  git(["worktree", "remove", "--force", wt]);
+  git(["branch", "-D", `stage/${id}`]);
+  const r = git(["worktree", "add", wt, "-b", `stage/${id}`]);
+  if (r.status !== 0) emit("worktree_failed", id, { error: r.stderr?.slice(0, 200) });
+  else emit("worktree_created", id, { worktree: wt });
+  return wt;
+}
+
+function worktreeMerge(id: string) {
+  git(["merge", "--no-ff", `stage/${id}`, "-m", `merge stage/${id}`]);
+  git(["worktree", "remove", "--force", path.join("worktrees", id)]);
+  emit("worktree_merged", id);
+}
+
+/** Rollback. Discards everything the stage did; repo is untouched. */
+function worktreeRemove(id: string) {
+  git(["worktree", "remove", "--force", path.join("worktrees", id)]);
+  git(["branch", "-D", `stage/${id}`]);
+  emit("rollback_executed", id);
+}
+
+/**
+ * Commit a passing stage's work.
+ *
+ * Necessary as well as tidy: worktrees branch from HEAD, so an artifact that
+ * is only sitting uncommitted in the main directory is invisible to a parallel
+ * stage. Committing per stage is also the lineage record.
+ */
+function commit(id: string, cwd = ".") {
+  git(["add", "-A"], cwd);
+  git(["commit", "-m", `stage(${id}): automated output`], cwd);
+}
+
+// ---------------------------------------------------------------------------
+// Gates
+// ---------------------------------------------------------------------------
+
+function entryGate(stage: Stage, cwd: string): [boolean, string] {
+  const missing = stage.inputs.filter((i) => !fs.existsSync(path.join(cwd, i)));
+  emit("gate_evaluated", stage.id, {
+    gate: "entry",
+    result: missing.length ? "fail" : "pass",
+    missing,
+  });
+  return [missing.length === 0, `missing inputs: ${missing.join(", ")}`];
+}
+
+/** Ultra-simple but real: declared outputs must exist and be non-empty. */
+function exitGate(stage: Stage, cwd: string): [boolean, string] {
+  const bad = stage.outputs.filter((o) => {
+    const p = path.join(cwd, o);
+    return !fs.existsSync(p) || fs.statSync(p).size === 0;
+  });
+  emit("gate_evaluated", stage.id, {
+    gate: "exit",
+    result: bad.length ? "fail" : "pass",
+    missing: bad,
+  });
+  return [bad.length === 0, `missing or empty outputs: ${bad.join(", ")}`];
+}
+
+// ---------------------------------------------------------------------------
+// Stage execution
+// ---------------------------------------------------------------------------
+
+/** A fresh subagent gets nothing but this string, so paths go in it. */
+function buildPrompt(stage: Stage, retryReason: string | null): string {
+  return [
+    `Use the ${stage.agent} subagent for this task.`,
+    stage.prompt,
+    stage.inputs.length ? `Read these inputs: ${stage.inputs.join(", ")}.` : "",
+    `You must produce: ${stage.outputs.join(", ")}.`,
+    retryReason
+      ? `A previous attempt failed its exit gate: ${retryReason}. Fix that specifically.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function runAgent(
+  prompt: string,
+  cwd: string,
+): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(CLAUDE_BIN, ["-p", prompt], { cwd });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    child.stdout.on("data", () => {});
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve({ code: 124, stderr: `timed out after ${TIMEOUT / 1000}s` });
+    }, TIMEOUT);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? 1, stderr });
+    });
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: 127, stderr: String(e) });
+    });
+  });
+}
+
+interface Result {
+  id: string;
+  ok: boolean;
+  why: string | null;
+}
+
+async function runStage(stage: Stage, state: State): Promise<Result> {
+  const id = stage.id;
+  const attempt = state.stages[id].attempts + 1;
+  const reason = state.stages[id].lastFailure;
+  const cwd = stage.worktree ? path.join("worktrees", id) : ".";
+
+  state.set(id, { status: "running", attempts: attempt, startedAt: Date.now() / 1000 });
+  emit("stage_started", id, { attempt, cwd });
+  log(`▶ ${id} (attempt ${attempt})${stage.worktree ? " [worktree]" : ""}`);
+
+  const [entryOk, entryWhy] = entryGate(stage, cwd);
+  if (!entryOk) return { id, ok: false, why: entryWhy };
+
+  // Hooks read this to tag their events with the right stage.
+  fs.writeFileSync(path.join(ORCH, "current_stage"), id);
+
+  const { code, stderr } = await runAgent(buildPrompt(stage, reason), cwd);
+  if (code !== 0) {
+    return { id, ok: false, why: `agent exited ${code}: ${stderr.slice(0, 300)}` };
+  }
+
+  const [exitOk, exitWhy] = exitGate(stage, cwd);
+  return { id, ok: exitOk, why: exitOk ? null : exitWhy };
+}
+
+function finish(stage: Stage, r: Result, state: State) {
+  if (r.ok) {
+    if (stage.worktree) {
+      commit(r.id, path.join("worktrees", r.id)); // commit inside the worktree
+      worktreeMerge(r.id);
+    } else {
+      commit(r.id);
+    }
+    state.set(r.id, { status: "passed", endedAt: Date.now() / 1000, lastFailure: null });
+    emit("stage_passed", r.id);
+    log(`✓ ${r.id}`);
+  } else {
+    if (stage.worktree) worktreeRemove(r.id); // rollback on failure
+    state.set(r.id, {
+      status: "failed",
+      endedAt: Date.now() / 1000,
+      lastFailure: r.why,
+    });
+    emit("stage_failed", r.id, { reason: r.why });
+    log(`✗ ${r.id}: ${r.why}`);
+    if (state.stages[r.id].attempts <= (stage.maxRetries ?? 1)) {
+      emit("retry_triggered", r.id);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const order = validateDag(STAGES); // rejects cycles before anything runs
+
+  if (process.argv.includes("--reset")) {
+    fs.rmSync(".orchestrator/state.json", { force: true });
+    console.log("state cleared");
+  }
+
+  if (process.argv.includes("--plan")) {
+    console.log(`\ntopological order: ${order.join(" -> ")}\n`);
+    for (const s of STAGES) {
+      console.log(
+        `  ${s.id.padEnd(20)} dependsOn: ${s.dependsOn.join(", ") || "(root)"}`,
+      );
+    }
+    return;
+  }
+
+  const byId = new Map(STAGES.map((s) => [s.id, s]));
+  const state = State.loadOrNew(STAGES);
+  emit("run_started", "orchestrator", { runId: state.runId });
+
+  for (;;) {
+    if (fs.existsSync(STOP_FILE)) {
+      emit("safe_stop", "orchestrator");
+      log("SAFE-STOP engaged — halting at stage boundary");
+      break;
+    }
+
+    let ready = readyStages(STAGES, state);
+
+    // Greenfield: nothing to analyse yet, so skip rather than fail.
+    let skippedAny = false;
+    for (const s of [...ready]) {
+      const probe = s.skipIfEmpty;
+      const empty =
+        probe && (!fs.existsSync(probe) || fs.readdirSync(probe).length === 0);
+      if (empty) {
+        state.set(s.id, { status: "skipped" });
+        emit("stage_skipped", s.id, { reason: `${probe}/ is empty` });
+        log(`⊘ ${s.id} (skipped)`);
+        ready = ready.filter((x) => x.id !== s.id);
+        skippedAny = true;
+      }
+    }
+    if (skippedAny) continue; // recompute: skipping may have unblocked others
+
+    if (!ready.length) break;
+
+    if (ready.length > 1) {
+      log(`→ ${ready.length} stages in parallel: ${ready.map((s) => s.id).join(", ")}`);
+    }
+
+    // Worktrees are created serially: concurrent `git worktree add` calls
+    // contend on .git/index.lock and one will silently fail.
+    for (const s of ready) if (s.worktree) worktreeAdd(s.id);
+
+    const results = await Promise.all(ready.map((s) => runStage(s, state)));
+    for (const r of results) finish(byId.get(r.id)!, r, state);
+  }
+
+  emit("run_ended", "orchestrator");
+  console.log("\nfinal state:");
+  for (const id of order) console.log(`  ${id.padEnd(20)} ${state.status(id)}`);
+  console.log("\nrun `tsx metrics.ts` for reliability metrics\n");
+}
+
+main().catch((e) => {
+  console.error(e.message);
+  process.exit(1);
+});

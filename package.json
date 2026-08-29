@@ -1,0 +1,19 @@
+{
+  "name": "url-shortener",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agentic SDLC orchestration scaffolding for a URL shortener",
+  "scripts": {
+    "plan": "tsx orchestrator/runner.ts --plan",
+    "run": "tsx orchestrator/runner.ts",
+    "metrics": "tsx orchestrator/metrics.ts",
+    "orch": "tsx orchestrator/orch.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}

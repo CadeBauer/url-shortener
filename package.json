@@ -8,10 +8,22 @@
     "plan": "tsx orchestrator/runner.ts --plan",
     "run": "tsx orchestrator/runner.ts",
     "metrics": "tsx orchestrator/metrics.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:src": "tsc -p tsconfig.src.json",
+    "test": "mocha"
+  },
+  "dependencies": {
+    "express": "^4.22.2"
   },
   "devDependencies": {
+    "@types/chai": "^4.3.20",
+    "@types/express": "^4.17.21",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^26.4.0",
+    "@types/supertest": "^6.0.3",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2",
+    "supertest": "^7.1.4",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }

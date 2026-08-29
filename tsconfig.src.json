@@ -1,0 +1,20 @@
+{
+  "//": "Scoped tsconfig for src/ + tests/ (contract §1, §9). The repo-root",
+  "//2": "tsconfig.json is bundler/noEmit and geared at the orchestrator; this",
+  "//3": "one gives the Mocha suite Node-style resolution, esModuleInterop for",
+  "//4": "supertest's `export =` default import, and the mocha/chai/node ambient",
+  "//5": "types. tsx (the loader) does not type-check; run `tsc -p tsconfig.src.json`",
+  "//6": "for that.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "types": ["node", "mocha", "chai"]
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

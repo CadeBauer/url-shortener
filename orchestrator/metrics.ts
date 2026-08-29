@@ -57,7 +57,6 @@ function main() {
   const passed = of("stage_passed");
   const rollbacks = of("rollback_executed");
   const denials = of("policy_denied");
-  const approvals = of("approval_granted");
   const stagesOf = (es: Event[]) => new Set(es.map((e) => e.stage));
 
   console.log("\n" + "=".repeat(58));
@@ -106,8 +105,7 @@ function main() {
   );
 
   // -- governance ------------------------------------------------------------
-  console.log(`\nApproval checkpoints    ${approvals.length} granted`);
-  console.log(`Policy denials          ${denials.length}`);
+  console.log(`\nPolicy denials          ${denials.length}`);
   const byRule = new Map<string, number>();
   for (const d of denials) {
     const r = String(d.rule ?? "?");

@@ -29,7 +29,7 @@ orchestrator/
   graph.ts              graph validation + stage readiness
   runner.ts             the execution loop
   metrics.ts            metrics derived from the audit log
-  orch.ts               CLI for approvals, safe-stop, rollback
+  orch.ts               CLI for safe-stop, rollback
 inbox/request.md        the incoming requirement
 artifacts/              stage outputs — the context channel between stages
 src/  tests/            the workload being built
@@ -51,17 +51,15 @@ The file holds no state. The runner owns stage status in an in-memory map and pa
 Repeatedly asks for ready stages and runs them. For each: entry gate → invoke the subagent → exit gate → commit or roll back. A stage gets exactly one attempt; if it fails it stays failed, and the run ends once nothing else is ready. Parallel stages run in isolated git worktrees. Every passing stage commits its outputs, which is both the lineage record and how a parallel stage sees its inputs (worktrees branch from HEAD).
 
 ### `hook.ts` — governance
-Runs inside Claude Code on every tool call. Exit code 2 blocks the call and returns the reason to the agent. Four controls:
+Runs inside Claude Code on every `PreToolUse`. Exit code 2 blocks the call and returns the reason to the agent. Two controls:
 
-- **Write scope** — nothing outside the project or its worktrees.
-- **Per-stage write allowlist** — analysis stages may write only `artifacts/`; `write_tests` may write only `tests/` and `implement` only `src/`, so the stage that writes the tests cannot touch the code and the stage that fixes the code cannot touch the tests. This is what makes the reasoning artifacts real rather than retroactive.
 - **No publish** — agents commit locally but can never push. Covers `git push`, `gh pr`, `npm publish`, remote mutation, and compound statements that chain them.
-- **Safe-stop** — a sentinel file halts all agent activity at the next tool call.
+- **Destructive commands** — `rm -rf`, `git filter-branch`, and raw writes to block devices are denied outright.
 
-Schema writes additionally require a human approval token. Denials are logged, not silent: the record of what the system refused to do is the evidence of controlled autonomy.
+Denials are logged, not silent: the record of what the system refused to do is the evidence of controlled autonomy.
 
 ### `orch.ts` — operator CLI
-Approvals, safe-stop, and manual worktree rollback. `tsx orch.ts approve` writes the approval token and logs who granted it.
+Safe-stop and manual worktree rollback.
 
 ### `metrics.ts` — reliability metrics
 Success rate (stages passed / stages attempted), rollback frequency, MTTR, and end-to-end latency, all derived from `audit.jsonl`. Nothing is tracked in a parallel counter, so the metrics can't drift from the record. Metrics with no qualifying events report `n/a` rather than zero.
@@ -78,7 +76,7 @@ Three, in `.claude/agents/`. Each runs in a fresh context window with scoped too
 
 A. Greenfield  — build from cold start; parallel implementation stages 
 
-B. Brownfield  — add analytics; impact_analysis artifact + approval halt on schema 
+B. Brownfield  — add analytics; impact_analysis artifact reasons about the store-interface extension.
 
 C. Ambiguous   — "make it reliable at scale"; clarification memo, no code written
 
@@ -87,8 +85,8 @@ C. Ambiguous   — "make it reliable at scale"; clarification memo, no code writ
 
 ## Scope
 
-**Built:** dependency graph with gates, sequential and parallel execution with synchronization, cross-stage context and lineage, approval checkpoints, worktree rollback, safe-stop, policy guardrails, audit log, derived metrics.
+**Built:** dependency graph with gates, sequential and parallel execution with synchronization, cross-stage context and lineage, worktree rollback, safe-stop, policy guardrails, audit log, derived metrics.
 
 **Designed but not implemented:** dynamic re-planning on upstream change. Input hashes give the detection primitive; staleness propagation and subgraph re-execution were scoped out under time constraints. See `agentic-orchestration-requirements.md`.
 
-**Known limitations:** local execution only (no distributed scheduler); single-user CLI approvals; illustrative rather than regulation-mapped compliance rules; metrics computed over a handful of runs. Runs are not resumable and each stage gets a single attempt — retry and run-state persistence were cut under the time constraint.
+**Known limitations:** local execution only (no distributed scheduler); illustrative rather than regulation-mapped compliance rules; metrics computed over a handful of runs. Runs are not resumable and each stage gets a single attempt — retry and run-state persistence were cut under the time constraint.

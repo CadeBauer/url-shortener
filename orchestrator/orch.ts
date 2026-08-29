@@ -3,12 +3,11 @@
  * orch.ts — thin CLI over the audit log and git worktrees.
  *
  * Hooks capture what agents do; the runner captures stage boundaries. This
- * captures what YOU do out of band: approvals, safe-stop, manual rollback.
+ * captures what YOU do out of band: safe-stop, manual rollback.
  * Between the three, every event needed for metrics lands in one file.
  *
  *   tsx orch.ts stage <id>             mark the current stage
  *   tsx orch.ts start|pass|fail <id>   stage boundary events
- *   tsx orch.ts approve                grant approval for the current stage
  *   tsx orch.ts stop | resume          engage / clear safe-stop
  *   tsx orch.ts wt-add <name>          create a worktree
  *   tsx orch.ts rollback <name>        discard a worktree  (rollback_executed)
@@ -17,15 +16,12 @@
 
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 const ORCH = ".orchestrator";
 const LOG = path.join(ORCH, "audit.jsonl");
-const APPROVALS = path.join(ORCH, "approvals");
 const STOP_FILE = path.join(ORCH, "STOP");
 
-fs.mkdirSync(APPROVALS, { recursive: true });
 fs.mkdirSync("worktrees", { recursive: true });
 
 const stage = () => {
@@ -84,14 +80,6 @@ switch (cmd) {
     console.log(`✗ ${arg}`);
     break;
 
-  case "approve": {
-    const token = path.join(APPROVALS, `${stage()}.granted`);
-    fs.writeFileSync(token, "");
-    emit("approval_granted", { operator: os.userInfo().username });
-    console.log(`approved: ${stage()}`);
-    break;
-  }
-
   case "stop":
     fs.writeFileSync(STOP_FILE, "");
     emit("safe_stop");
@@ -132,6 +120,6 @@ switch (cmd) {
   }
 
   default:
-    console.log(fs.readFileSync(new URL(import.meta.url), "utf-8").split("\n").slice(2, 17).join("\n"));
+    console.log(fs.readFileSync(new URL(import.meta.url), "utf-8").split("\n").slice(2, 15).join("\n"));
     process.exit(1);
 }

@@ -5,13 +5,16 @@
  *   tsx runner.ts           run until nothing is left to do
  *   tsx runner.ts --plan    print the graph and exit, running nothing
  *   tsx runner.ts --resume  seed status from the audit log and re-run only
- *                           the stages that did not pass last time
+ *                           the stages that have not passed
  *
  * Without --resume every run starts cold. Stage status lives in an in-memory
- * Map owned by main(). With --resume that Map is seeded from the last run's
- * stage_passed / stage_skipped events in .orchestrator/audit.jsonl — the only
- * record of what actually finished — so a stage that was killed mid-run comes
- * back as pending and runs again. No separate state file to fall out of sync.
+ * Map owned by main(). With --resume that Map is seeded from the most recent
+ * recorded outcome of each stage in .orchestrator/audit.jsonl — the only
+ * record of what actually finished. A stage whose latest outcome is
+ * stage_passed / stage_skipped carries over; one that failed, was killed
+ * mid-run, or never ran comes back as pending. Scanning per stage across the
+ * whole log (not just the last run) means repeated resumes keep accumulating
+ * progress. No separate state file to fall out of sync.
  *
  * Sequencing is never written down. It falls out of `dependsOn` in stages.ts.
  * When readyStages() returns two stages, they run concurrently against the
@@ -173,10 +176,15 @@ function finish(r: Result, status: Map<string, Status>) {
 // ---------------------------------------------------------------------------
 
 /**
- * Cold start: every stage pending. With --resume, replay the most recent run
- * from the audit log and carry over only what reached stage_passed or
- * stage_skipped; anything else (failed, or killed before it could report)
- * stays pending and runs again. No separate state file to drift from the log.
+ * Cold start: every stage pending. With --resume, seed each stage from its
+ * most recent terminal event anywhere in the audit log — stage_passed or
+ * stage_skipped carries over, stage_failed or an interrupted run (a
+ * stage_started with no matching terminal event) comes back as pending.
+ *
+ * The scan is per stage across the whole log, not confined to the last run,
+ * so a stage carried over by an earlier resume — and therefore never
+ * re-emitting stage_passed — still counts as done on the next resume.
+ * No separate state file to drift from the log.
  */
 function initialStatus(): Map<string, Status> {
   const status = new Map<string, Status>(STAGES.map((s) => [s.id, "pending"]));
@@ -200,34 +208,25 @@ function initialStatus(): Map<string, Status> {
     })
     .filter((e): e is { stage?: string; event?: string } => e !== null);
 
-  let start = -1;
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].event === "run_started") {
-      start = i;
-      break;
+  const TERMINAL = new Set(["stage_passed", "stage_failed", "stage_skipped"]);
+  const carried: string[] = [];
+
+  for (const s of STAGES) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.stage !== s.id || !TERMINAL.has(e.event ?? "")) continue;
+      if (e.event === "stage_passed" || e.event === "stage_skipped") {
+        status.set(s.id, e.event === "stage_passed" ? "passed" : "skipped");
+        carried.push(s.id);
+      }
+      break; // most recent terminal event for this stage wins
     }
-  }
-  if (start === -1) {
-    log("--resume: no prior run in the audit log, starting cold");
-    return status;
   }
 
-  const carried: string[] = [];
-  for (const e of events.slice(start)) {
-    const st = e.stage ?? "";
-    if (!status.has(st)) continue;
-    if (e.event === "stage_passed") {
-      status.set(st, "passed");
-      carried.push(st);
-    } else if (e.event === "stage_skipped") {
-      status.set(st, "skipped");
-      carried.push(st);
-    }
-  }
   log(
     carried.length
       ? `--resume: carrying over ${carried.join(", ")}`
-      : "--resume: last run recorded nothing to carry over, starting cold",
+      : "--resume: nothing recorded to carry over, starting cold",
   );
   return status;
 }

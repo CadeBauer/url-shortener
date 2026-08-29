@@ -112,11 +112,14 @@ export const STAGES: Stage[] = [
     inputs: ["src/main.ts", "tests/shortener.test.ts"],
     outputs: ["artifacts/test/results.md"],
     prompt:
-      "Install dependencies and run the suite against the merged source. Fix " +
-      "src/ until it is green — you may not edit, skip or delete a test to " +
-      "get there. Write artifacts/test/results.md with the final test " +
-      "output, every fix you made, and any place the implementation and the " +
-      "contract disagreed.",
+      "Install dependencies, then run the suite against the merged source " +
+      "with `npx mocha --exit --timeout 10000` (or the project's `npm test` " +
+      "script). Never leave a command running and never wait on one that " +
+      "does not return — if a run hangs instead of finishing, that is a bug " +
+      "in src/ to fix, not something to wait out. Fix src/ until it is " +
+      "green; you may not edit, skip or delete a test to get there. Write " +
+      "artifacts/test/results.md with the final test output, every fix you " +
+      "made, and any place the implementation and the contract disagreed.",
   },
   {
     id: "document",

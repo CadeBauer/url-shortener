@@ -8,5 +8,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "types": ["node"]
-  }
+  },
+  "exclude": ["node_modules", "tests"]
 }

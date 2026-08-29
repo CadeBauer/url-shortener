@@ -95,7 +95,11 @@ function runAgent(
   cwd: string,
 ): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(CLAUDE_BIN, ["-p", prompt], { cwd });
+    const child = spawn(
+      CLAUDE_BIN,
+      ["-p", prompt, "--permission-mode", "acceptEdits"],
+      { cwd },
+    );
     let stderr = "";
     child.stderr.on("data", (d) => (stderr += d));
     child.stdout.on("data", () => {});

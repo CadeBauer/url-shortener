@@ -29,7 +29,6 @@ orchestrator/
   graph.ts              graph validation + stage readiness
   runner.ts             the execution loop
   metrics.ts            metrics derived from the audit log
-  orch.ts               CLI for safe-stop
 inbox/request.md        the incoming requirement
 artifacts/              stage outputs — the context channel between stages
 src/  tests/            the workload being built
@@ -58,9 +57,6 @@ Runs inside Claude Code on every `PreToolUse`. Exit code 2 blocks the call and r
 
 Denials are logged, not silent: the record of what the system refused to do is the evidence of controlled autonomy.
 
-### `orch.ts` — operator CLI
-Safe-stop.
-
 ### `metrics.ts` — reliability metrics
 Success rate (stages passed / stages attempted), rollback frequency, MTTR, and end-to-end latency, all derived from `audit.jsonl`. Nothing is tracked in a parallel counter, so the metrics can't drift from the record. Metrics with no qualifying events report `n/a` rather than zero.
 
@@ -85,8 +81,8 @@ C. Ambiguous   — "make it reliable at scale"; clarification memo, no code writ
 
 ## Scope
 
-**Built:** dependency graph with gates, sequential and parallel execution with synchronization, cross-stage context and lineage, safe-stop, policy guardrails, audit log, derived metrics.
+**Built:** dependency graph with gates, sequential and parallel execution with synchronization, cross-stage context and lineage, policy guardrails, audit log, derived metrics.
 
 **Designed but not implemented:** dynamic re-planning on upstream change. Input hashes give the detection primitive; staleness propagation and subgraph re-execution were scoped out under time constraints. See `agentic-orchestration-requirements.md`.
 
-**Known limitations:** local execution only (no distributed scheduler); illustrative rather than regulation-mapped compliance rules; metrics computed over a handful of runs. Runs are not resumable and each stage gets a single attempt — retry and run-state persistence were cut under the time constraint.
+**Known limitations:** local execution only (no distributed scheduler); illustrative rather than regulation-mapped compliance rules; metrics computed over a handful of runs. Runs are not resumable and each stage gets a single attempt — retry and run-state persistence were cut under the time constraint. No graceful in-flight halt — a run in progress can only be stopped by killing the process; a stage-boundary safe-stop was out of scope for this prototype.

@@ -60,8 +60,7 @@ export const STAGES: Stage[] = [
     prompt:
       "Read artifacts/requirements/spec.md and, if it exists, " +
       "artifacts/impact/impact_analysis.md. Write artifacts/design/" +
-      "architecture.md covering components, the storage interface and the " +
-      "API surface, recording each significant choice with its rationale and " +
+      "architecture.md covering components, recording each significant choice with its rationale and " +
       "consequences. Then write artifacts/design/contract.md as the exact " +
       "interface both downstream branches build against without seeing each " +
       "other: every source file path, every exported symbol with its full " +

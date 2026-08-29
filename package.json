@@ -8,7 +8,6 @@
     "plan": "tsx orchestrator/runner.ts --plan",
     "run": "tsx orchestrator/runner.ts",
     "metrics": "tsx orchestrator/metrics.ts",
-    "orch": "tsx orchestrator/orch.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

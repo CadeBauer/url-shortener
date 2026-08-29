@@ -15,7 +15,7 @@
  * that is a sequential path. Same code path.
  *
  * The runner emits the stage-boundary events metrics.ts needs — so the log
- * stays complete without you having to remember to call ./orch at each step.
+ * stays complete without any out-of-band bookkeeping.
  */
 
 import { spawn } from "node:child_process";
@@ -27,7 +27,6 @@ import { validateDag, readyStages, type Status } from "./graph.js";
 
 const ORCH = ".orchestrator";
 const AUDIT_LOG = path.join(ORCH, "audit.jsonl");
-const STOP_FILE = path.join(ORCH, "STOP");
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? "claude";
 const TIMEOUT = Number(process.env.STAGE_TIMEOUT ?? 900) * 1000;
 
@@ -181,12 +180,6 @@ async function main() {
   emit("run_started", "orchestrator", { runId });
 
   for (;;) {
-    if (fs.existsSync(STOP_FILE)) {
-      emit("safe_stop", "orchestrator");
-      log("SAFE-STOP engaged — halting at stage boundary");
-      break;
-    }
-
     let ready = readyStages(STAGES, status);
 
     // Greenfield: nothing to analyse yet, so skip rather than fail.
